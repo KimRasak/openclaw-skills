@@ -1,14 +1,11 @@
-# OpenClaw Custom Skills
+# openclaw-skills
 
-Personal collection of [OpenClaw](https://github.com/openclaw/openclaw) skills.
+OpenClaw 技能集合。
 
-## Skills
+## 目录
 
-| Skill | Description |
-|-------|-------------|
-| [alphaxiv](./alphaxiv/) | Fetch trending & most-liked AI/ML papers from alphaxiv.org |
-| [hf-papers](./hf-papers/) | Fetch daily/weekly/monthly papers from Hugging Face |
-
-## Usage
-
-These skills are loaded from the OpenClaw workspace directory (`~/.openclaw/workspace-*/skills/`).
+| 目录 | 说明 |
+|---|---|
+| `ai-autopilot/` | 自主研究 Agent — 多源文献搜索、筛选、引文追踪、数据提取 |
+| `alphaxiv/` | AlphaXiv 论文获取 |
+| `hf-papers/` | HuggingFace 每日论文获取 |
