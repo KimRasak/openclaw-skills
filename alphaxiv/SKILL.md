@@ -1,30 +1,33 @@
 ---
 name: alphaxiv
-description: Fetch trending and top-liked AI/ML research papers from alphaxiv.org. Use when the user asks about trending papers on alphaxiv, popular ML/AI research, hot arxiv papers, most-liked papers, or wants to browse/search recent research from alphaxiv.org. NOT for: Hugging Face papers (use hf-papers), general arxiv search, or paper PDF downloads.
+description: Fetch trending and top-liked AI/ML research papers from alphaxiv.org with pagination (Load more) support. Use when the user asks about trending papers on alphaxiv, popular ML/AI research, hot arxiv papers, most-liked/viewed papers, or wants to browse/search recent research from alphaxiv.org. NOT for: Hugging Face papers (use hf-papers), general arxiv search, or paper PDF downloads.
 ---
 
 # AlphaXiv Paper Fetcher
 
-Fetch trending and most-liked papers from [alphaxiv.org](https://www.alphaxiv.org/) via its internal REST API.
+Fetch trending papers from [alphaxiv.org](https://www.alphaxiv.org/) via its public REST API, with full pagination (Load more) support.
 
 ## Quick Start
 
 ```bash
 python3 scripts/fetch_papers.py --sort Hot --limit 10
-python3 scripts/fetch_papers.py --sort Likes --limit 10
+python3 scripts/fetch_papers.py --sort Views --interval "7 Days"
+python3 scripts/fetch_papers.py --pages 3   # Load 3 pages (60 papers)
 ```
 
 ## API Details
 
 Endpoint: `GET https://api.alphaxiv.org/papers/v3/feed`
 
-Key query parameters:
-- `sort`: `Hot` (recent trending), `Likes` (all-time most liked), `New`
-- `interval`: `All time`, `Past week`, `Past month`, `Past year`
+Query parameters:
 - `pageNum`: 0-indexed page number
-- `pageSize`: max 20
+- `pageSize`: fixed 20 per page
+- `sort`: `Hot` | `Comments` | `Views` | `Likes` | `GitHub` | `Twitter (X)` | `Recommended`
+- `interval`: `3 Days` | `7 Days` | `30 Days` | `90 Days` | `All time`
+- `topics`: JSON array of arXiv categories, e.g. `["cs.AI","cs.CL"]`
+- `organizations`: JSON array, e.g. `["Google"]`
 
-The API returns full paper metadata including title, abstract, AI-generated summary, authors, organizations, arxiv ID, votes, visits, GitHub URL/stars, and publication date.
+No authentication required.
 
 ## Script Usage
 
@@ -34,30 +37,61 @@ The API returns full paper metadata including title, abstract, AI-generated summ
 python3 scripts/fetch_papers.py [OPTIONS]
 
 Options:
-  --sort SORT        Hot (default), Likes, New
-  --interval TEXT    "All time" (default), "Past week", "Past month", "Past year"
-  --page N           Page number, 0-indexed (default: 0)
-  --limit N          Papers per page, max 20 (default: 20)
-  --format FORMAT    table (default), json, brief
-  --query TEXT       Client-side keyword filter on title/abstract
+  --sort, -s SORT          Hot (default), Comments, Views, Likes, GitHub, Twitter (X)
+  --interval, -i INTERVAL  3 Days, 7 Days, 30 Days, 90 Days, All time (default)
+  --topics, -t TOPICS      arXiv categories to filter (e.g. cs.AI cs.CL)
+  --pages, -p N            Number of pages to load, 20 papers/page (default: 1)
+  --limit, -n N            Max papers to return
+  --format, -f FORMAT      text (default), json, md
+  --output, -o FILE        Save to file (default: stdout)
 ```
 
 ### Output Formats
 
-- **table**: Human-readable table with rank, votes, visits, date, title, orgs, arxiv ID
-- **json**: Structured JSON with title, arxiv_id, votes, visits, pub_date, authors, orgs, summary, github_url, github_stars
-- **brief**: One-liner per paper: `1. [248👍] Title (arxiv_id)`
+- **text**: Human-readable with views, votes, authors, summary, topics, links
+- **json**: Structured JSON with full metadata for downstream processing
+- **md**: Markdown with abstracts in collapsible details
+
+### Output Fields
+
+Each paper includes: title, abstract, AI summary, key insights, authors, organizations, topics, views (all + 7d), votes, GitHub stars/URL, arXiv URL, AlphaXiv URL, publication date.
 
 ## Common Tasks
 
-### Compare Hot vs Most Liked
-Run the script twice with `--sort Hot` and `--sort Likes`. Hot reflects recent trending; Likes is cumulative all-time. They typically have zero overlap.
+### Browse hot papers
+```bash
+python3 scripts/fetch_papers.py --limit 10
+```
 
-### Search for a topic
-Use `--query "attention"` to client-side filter results by keyword in title or abstract.
+### Papers trending this week
+```bash
+python3 scripts/fetch_papers.py --interval "7 Days" --sort Hot
+```
 
-### Get full metadata for downstream processing
-Use `--format json` and pipe to `jq` or parse in Python.
+### Most viewed papers of all time
+```bash
+python3 scripts/fetch_papers.py --sort Views --pages 3
+```
 
-### Paginate
-Use `--page 0`, `--page 1`, etc. Each page returns up to 20 papers.
+### GitHub-popular papers
+```bash
+python3 scripts/fetch_papers.py --sort GitHub --limit 10
+```
+
+### Filter by topic
+```bash
+python3 scripts/fetch_papers.py --topics cs.AI cs.CL --limit 20
+```
+
+### Load more (pagination)
+Each page returns 20 papers. Use `--pages N` to load multiple pages:
+```bash
+python3 scripts/fetch_papers.py --pages 5              # 100 papers
+python3 scripts/fetch_papers.py --pages 5 --limit 50   # cap at 50
+```
+
+### Export for downstream processing
+```bash
+python3 scripts/fetch_papers.py --format json -o trending.json
+python3 scripts/fetch_papers.py --format md -o papers.md
+```
