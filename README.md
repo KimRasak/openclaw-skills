@@ -1,10 +1,82 @@
-# openclaw-skills
+# OpenClaw Skills
 
-OpenClaw 技能集合。
+AI 研究助理技能集合 —— 用于论文发现、文献追踪和研究话题探索。
 
-## 目录
+可配合 [OpenClaw](https://github.com/openclaw-ai) Agent 或 Cursor/Claude 等 AI 编辑器使用。
 
-| 目录 | 说明 |
-|---|---|
-| `alphaxiv/` | AlphaXiv 论文获取 |
-| `hf-papers/` | HuggingFace 每日论文获取 |
+## Skills 一览
+
+| Skill | 用途 | 数据源 | 需要 API Key |
+|-------|------|--------|:---:|
+| [alphaxiv](alphaxiv/) | 获取热门/高赞 AI/ML 论文，支持分页 | [alphaxiv.org](https://www.alphaxiv.org/) | 否 |
+| [hf-papers](hf-papers/) | 获取 Hugging Face 每日/每周/每月论文 | [huggingface.co/papers](https://huggingface.co/papers) | 否 |
+| [citation-explorer](citation-explorer/) | 从种子论文出发，沿引用链发散探索研究话题，生成话题关系图谱 | [OpenAlex API](https://openalex.org/) (2.5亿+ 文献) | 否 |
+
+## 快速使用
+
+### alphaxiv — 热门论文
+
+```bash
+python3 alphaxiv/scripts/fetch_papers.py --sort Hot --limit 10
+python3 alphaxiv/scripts/fetch_papers.py --sort Views --interval "7 Days"
+```
+
+### hf-papers — HuggingFace 每日论文
+
+```bash
+python3 hf-papers/scripts/hf_papers.py              # 今日论文
+python3 hf-papers/scripts/hf_papers.py --date 2026-03-10  # 指定日期
+```
+
+### citation-explorer — 研究话题发散探索
+
+```bash
+# 搜索种子论文
+python3 citation-explorer/scripts/scholar-search.py search "qwen vision language" --limit 5
+
+# 以种子论文为中心，发散探索相关研究话题，生成可视化图谱
+python3 citation-explorer/scripts/citation-explorer.py explore \
+  --seed "10.48550/arXiv.2308.12966" \
+  --depth 2 --max-papers 30 --strategy priority \
+  --focus image vision generation multimodal \
+  --exclude-topics medical healthcare biology \
+  --render-graph topic_map.html
+```
+
+## 目录结构
+
+```
+openclaw-skills/
+├── alphaxiv/
+│   ├── SKILL.md
+│   └── scripts/fetch_papers.py
+├── hf-papers/
+│   ├── SKILL.md
+│   └── scripts/hf_papers.py
+├── citation-explorer/
+│   ├── SKILL.md
+│   └── scripts/
+│       ├── scholar-search.py       # OpenAlex 论文搜索
+│       ├── citation-explorer.py    # 引用链发散探索引擎
+│       └── render-graph.py         # 研究话题图谱渲染 (D3.js)
+└── README.md
+```
+
+## 安装方式
+
+每个 Skill 都是独立的，直接复制对应目录到你的 AI 工具的 skills 路径即可：
+
+```bash
+# Cursor
+cp -r citation-explorer/ ~/.cursor/skills/citation-explorer/
+
+# Claude Code
+cp -r citation-explorer/ ~/.claude/skills/citation-explorer/
+
+# OpenClaw Agent
+python3 scripts/skill_manager.py add-remote \
+  --agent zhongshu --name citation_explorer \
+  --source https://raw.githubusercontent.com/KimRasak/openclaw-skills/main/citation-explorer/SKILL.md
+```
+
+所有 Skill 均无需 API Key，零外部依赖（仅 Python 标准库）。
