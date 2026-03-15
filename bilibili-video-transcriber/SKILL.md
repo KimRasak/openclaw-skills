@@ -101,10 +101,10 @@ python3 scripts/transcribe_audio.py "output/视频标题.mp3" \
 ## Multi-GPU Parallel Transcription
 
 When multiple GPUs are available, the script automatically:
-1. Splits the audio into N equal chunks (N = number of GPUs)
-2. Spawns N independent subprocesses, each loading its own Whisper model on a dedicated GPU
+1. Splits the audio into N chunks with a 10-second overlap between adjacent chunks (avoids cutting mid-sentence)
+2. Spawns N independent subprocesses via `spawn`, each loading its own Whisper model on a dedicated GPU
 3. Transcribes all chunks in parallel
-4. Merges results with corrected timestamps
+4. Deduplicates segments in the overlap regions by midpoint timestamp, then merges results
 
 Use `--num-gpus` to limit the number of GPUs (default: use all available). Use `--num-gpus 1` to force single-GPU mode.
 

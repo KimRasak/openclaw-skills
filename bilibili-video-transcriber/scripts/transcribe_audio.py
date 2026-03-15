@@ -42,22 +42,33 @@ def format_timestamp(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
-def split_audio(audio_path: str, num_chunks: int, tmp_dir: str) -> list[tuple[str, float]]:
-    """Split audio into N chunks, return [(chunk_path, offset_seconds), ...]."""
+OVERLAP_MS = 10_000  # 10s overlap between adjacent chunks
+
+
+def split_audio(
+    audio_path: str, num_chunks: int, tmp_dir: str,
+) -> list[tuple[str, float, float]]:
+    """Split audio into N chunks with overlapping windows.
+
+    Returns [(chunk_path, offset_seconds, boundary_seconds), ...] where
+    boundary_seconds is the original (non-overlapping) start of the *next* chunk,
+    used later to deduplicate segments in the overlap region.
+    """
     from pydub import AudioSegment
 
-    print(f"Splitting audio into {num_chunks} chunks ...")
+    print(f"Splitting audio into {num_chunks} chunks (overlap={OVERLAP_MS}ms) ...")
     audio = AudioSegment.from_file(audio_path)
     total_ms = len(audio)
-    chunk_ms = total_ms // num_chunks
-    chunks: list[tuple[str, float]] = []
+    stride_ms = total_ms // num_chunks
+    chunks: list[tuple[str, float, float]] = []
     for i in range(num_chunks):
-        start_ms = i * chunk_ms
-        end_ms = total_ms if i == num_chunks - 1 else (i + 1) * chunk_ms
+        start_ms = max(0, i * stride_ms - OVERLAP_MS) if i > 0 else 0
+        end_ms = total_ms if i == num_chunks - 1 else (i + 1) * stride_ms
+        boundary = (i + 1) * stride_ms / 1000.0 if i < num_chunks - 1 else total_ms / 1000.0
         chunk = audio[start_ms:end_ms]
         chunk_path = os.path.join(tmp_dir, f"chunk_{i:03d}.mp3")
         chunk.export(chunk_path, format="mp3")
-        chunks.append((chunk_path, start_ms / 1000.0))
+        chunks.append((chunk_path, start_ms / 1000.0, boundary))
     print(f"Split complete: {num_chunks} chunks, total {total_ms / 1000:.1f}s")
     return chunks
 
@@ -91,6 +102,28 @@ def _worker_transcribe(
     return result
 
 
+def _deduplicate_overlap(all_segments: list[list[dict]], boundaries: list[float]) -> list[dict]:
+    """Merge per-chunk segment lists, dropping duplicates in overlap regions.
+
+    For each pair of adjacent chunks, segments from the earlier chunk that extend
+    past the boundary are dropped in favour of the later chunk's segments that
+    start near the boundary. This keeps the version with more surrounding context.
+    """
+    merged: list[dict] = []
+    for i, segs in enumerate(all_segments):
+        if i < len(boundaries):
+            boundary = boundaries[i]
+            # Keep segments whose midpoint is before the boundary
+            segs = [s for s in segs if (s["start"] + s["end"]) / 2 < boundary]
+        if i > 0 and boundaries:
+            prev_boundary = boundaries[i - 1]
+            # Drop segments whose midpoint is before the previous boundary
+            segs = [s for s in segs if (s["start"] + s["end"]) / 2 >= prev_boundary]
+        merged.extend(segs)
+    merged.sort(key=lambda s: s["start"])
+    return merged
+
+
 def parallel_transcribe(
     audio_path: str,
     num_gpus: int,
@@ -98,7 +131,7 @@ def parallel_transcribe(
     language: str | None = None,
     beam_size: int = 5,
 ) -> tuple[list[dict], str | None]:
-    """Split audio across GPUs, transcribe in parallel, merge results."""
+    """Split audio across GPUs with overlap, transcribe in parallel, merge and deduplicate."""
     ctx = multiprocessing.get_context("spawn")
     with tempfile.TemporaryDirectory(prefix="whisper_parallel_") as tmp_dir:
         chunks = split_audio(audio_path, num_gpus, tmp_dir)
@@ -106,10 +139,11 @@ def parallel_transcribe(
         t0 = time.time()
 
         all_segments: list[list[dict]] = [[] for _ in range(num_gpus)]
+        boundaries = [boundary for _, _, boundary in chunks[:-1]]
 
         with ProcessPoolExecutor(max_workers=num_gpus, mp_context=ctx) as executor:
             future_to_idx = {}
-            for i, (chunk_path, offset) in enumerate(chunks):
+            for i, (chunk_path, offset, _boundary) in enumerate(chunks):
                 fut = executor.submit(
                     _worker_transcribe,
                     chunk_path, offset, i, model_size, language, beam_size,
@@ -120,9 +154,7 @@ def parallel_transcribe(
                 idx = future_to_idx[fut]
                 all_segments[idx] = fut.result()
 
-        merged = []
-        for segs in all_segments:
-            merged.extend(segs)
+        merged = _deduplicate_overlap(all_segments, boundaries)
 
         elapsed = time.time() - t0
         print(f"Parallel transcription complete: {len(merged)} segments in {elapsed:.1f}s "
