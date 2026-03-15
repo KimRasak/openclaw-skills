@@ -29,7 +29,7 @@ conda install -y ffmpeg -c conda-forge
 pip install faster-whisper
 ```
 
-Requires CUDA-capable GPU and PyTorch with CUDA support.
+Requires CUDA-capable GPU and PyTorch with CUDA support. The script enforces GPU availability at startup — if no CUDA GPU is detected, it exits with an error immediately.
 
 ## Workflow
 
@@ -59,10 +59,10 @@ python3 scripts/transcribe_audio.py <AUDIO_FILE> [OPTIONS]
 | `-o`, `--output` | `<audio>.txt` | Output text file path |
 | `-m`, `--model` | `large-v3` | Model size: `tiny` / `base` / `small` / `medium` / `large-v3` |
 | `-l`, `--language` | auto-detect | Language code: `zh`, `en`, `ja`, etc. |
-| `--device` | `cuda` | `cuda` or `cpu` |
-| `--compute-type` | `float16` | `float16` / `int8` / `int8_float16` |
 | `--beam-size` | `5` | Beam search width |
 | `--timestamps` | off | Include `[HH:MM:SS -> HH:MM:SS]` timestamps |
+
+> **Note:** The script always runs on CUDA GPU with float16. No `--device` or `--compute-type` options — if GPU is unavailable, the script exits with an error.
 
 ### Full Example
 
@@ -98,6 +98,7 @@ For Chinese content, `large-v3` is strongly recommended for best accuracy.
 
 ## Notes
 
+- **GPU required**: The script checks for CUDA GPU at startup and exits immediately if unavailable (no CPU fallback)
 - Bilibili URL query parameters (e.g., `?spm_id_from=...`) are safely ignored
 - For multi-part videos (分P), use `--playlist-items` to select specific parts
 - Chinese characters in filenames are preserved correctly
