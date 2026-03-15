@@ -11,6 +11,7 @@ AI 研究助理技能集合 —— 用于论文发现、文献追踪和研究话
 | [alphaxiv](alphaxiv/) | 获取热门/高赞 AI/ML 论文，支持分页 | [alphaxiv.org](https://www.alphaxiv.org/) | 否 |
 | [hf-papers](hf-papers/) | 获取 Hugging Face 每日/每周/每月论文 | [huggingface.co/papers](https://huggingface.co/papers) | 否 |
 | [citation-explorer](citation-explorer/) | 从种子论文出发，沿引用链发散探索研究话题，生成话题关系图谱 | [OpenAlex API](https://openalex.org/) (2.5亿+ 文献) | 否 |
+| [bilibili-video-transcriber](bilibili-video-transcriber/) | 下载B站视频音频并用 Whisper 转录为文本 | [Bilibili](https://www.bilibili.com/) + [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (GPU) | 否 |
 
 ## 快速使用
 
@@ -43,6 +44,19 @@ python3 citation-explorer/scripts/citation-explorer.py explore \
   --render-graph topic_map.html
 ```
 
+### bilibili-video-transcriber — B站视频转文字
+
+```bash
+# 1. 下载音频
+yt-dlp -x --audio-format mp3 --audio-quality 0 \
+  -o "output/%(title)s.%(ext)s" \
+  "https://www.bilibili.com/video/BV1xxxxxxxxx/"
+
+# 2. GPU 转录为文本
+python3 bilibili-video-transcriber/scripts/transcribe_audio.py "output/视频标题.mp3" \
+  -o "output/视频标题.txt" -l zh --timestamps
+```
+
 ## 目录结构
 
 ```
@@ -59,6 +73,10 @@ openclaw-skills/
 │       ├── scholar-search.py       # OpenAlex 论文搜索
 │       ├── citation-explorer.py    # 引用链发散探索引擎
 │       └── render-graph.py         # 研究话题图谱渲染 (D3.js)
+├── bilibili-video-transcriber/
+│   ├── SKILL.md
+│   └── scripts/
+│       └── transcribe_audio.py     # faster-whisper GPU 音频转文字
 └── README.md
 ```
 
@@ -79,4 +97,4 @@ python3 scripts/skill_manager.py add-remote \
   --source https://raw.githubusercontent.com/KimRasak/openclaw-skills/main/citation-explorer/SKILL.md
 ```
 
-所有 Skill 均无需 API Key，零外部依赖（仅 Python 标准库）。
+所有 Skill 均无需 API Key。大部分零外部依赖（仅 Python 标准库），`bilibili-video-transcriber` 需要 `yt-dlp`、`ffmpeg` 和 `faster-whisper`。
