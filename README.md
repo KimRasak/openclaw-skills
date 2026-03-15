@@ -11,7 +11,7 @@ AI 研究助理技能集合 —— 用于论文发现、文献追踪和研究话
 | [alphaxiv](alphaxiv/) | 获取热门/高赞 AI/ML 论文，支持分页 | [alphaxiv.org](https://www.alphaxiv.org/) | 否 |
 | [hf-papers](hf-papers/) | 获取 Hugging Face 每日/每周/每月论文 | [huggingface.co/papers](https://huggingface.co/papers) | 否 |
 | [citation-explorer](citation-explorer/) | 从种子论文出发，沿引用链发散探索研究话题，生成话题关系图谱 | [OpenAlex API](https://openalex.org/) (2.5亿+ 文献) | 否 |
-| [bilibili-video-transcriber](bilibili-video-transcriber/) | 下载B站视频音频并用 Whisper 转录为文本 | [Bilibili](https://www.bilibili.com/) + [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (GPU) | 否 |
+| [bilibili-video-transcriber](bilibili-video-transcriber/) | 下载B站视频音频并用 Whisper 转录为文本，支持多GPU并行和说话人分离 | [Bilibili](https://www.bilibili.com/) + [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (GPU) + [pyannote.audio](https://github.com/pyannote/pyannote-audio) | 说话人分离需HF Token |
 
 ## 快速使用
 
@@ -52,9 +52,9 @@ yt-dlp -x --audio-format mp3 --audio-quality 0 \
   -o "output/%(title)s.%(ext)s" \
   "https://www.bilibili.com/video/BV1xxxxxxxxx/"
 
-# 2. GPU 转录为文本
+# 2. 多GPU 并行转录 + 说话人分离
 python3 bilibili-video-transcriber/scripts/transcribe_audio.py "output/视频标题.mp3" \
-  -o "output/视频标题.txt" -l zh --timestamps
+  -o "output/视频标题.txt" -l zh --diarize --num-gpus 4
 ```
 
 ## 目录结构
