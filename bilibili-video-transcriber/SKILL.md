@@ -84,10 +84,10 @@ yt-dlp -x --audio-format mp3 --audio-quality 0 \
 |--------|---------|-------------|
 | `-o`, `--output` | `<audio>.txt` | Output text file path |
 | `-m`, `--model` | `large-v3` | Model size: `tiny` / `base` / `small` / `medium` / `large-v3` |
-| `-l`, `--language` | auto-detect | Language code: `zh`, `en`, `ja`, etc. |
+| `-l`, `--language` | auto-detect | Language hint (e.g. `zh`, `en`, `ja`). **Do not pass by default** — auto-detect preserves original language. Never use to translate |
 | `--beam-size` | `5` | Beam search width |
 | `--timestamps` | off | Include `[HH:MM:SS -> HH:MM:SS]` timestamps |
-| `--diarize` | off | Enable speaker diarization via WhisperX + pyannote (requires HF token) |
+| `--diarize` | **on** | Enable speaker diarization via WhisperX + pyannote (requires HF token) |
 | `--num-speakers` | auto-detect | Number of speakers (improves diarization accuracy when known) |
 | `--hf-token` | `$HF_TOKEN` | HuggingFace token for pyannote models |
 | `--num-gpus` | all available | Number of GPUs for parallel transcription |
@@ -104,16 +104,16 @@ yt-dlp -x --audio-format mp3 --audio-quality 0 \
   -o "output/%(title)s.%(ext)s" \
   "https://www.bilibili.com/video/BV1dKPrzPEwc/"
 
-# 2. Transcribe only (single GPU, with timestamps)
+# 2. Transcribe with timestamps (auto-detect language, single GPU)
 CUDA_VISIBLE_DEVICES=0 \
 /gluster_osa_cv/user/jinzili/env/whisperx/bin/python3 scripts/transcribe_audio.py \
-  "output/视频标题.mp3" -o "output/视频标题.txt" -l zh --timestamps
+  "output/视频标题.mp3" -o "output/视频标题.txt" --timestamps --diarize
 
 # 3. Transcribe with speaker diarization (7 GPUs parallel transcription)
 HF_TOKEN=<your_token> \
 /gluster_osa_cv/user/jinzili/env/whisperx/bin/python3 scripts/transcribe_audio.py \
   "output/视频标题.mp3" -o "output/视频标题.txt" \
-  -l zh --diarize --num-speakers 2 --num-gpus 7
+  --diarize --num-speakers 2 --num-gpus 7
 ```
 
 ## Multi-GPU Parallel Transcription
@@ -180,6 +180,8 @@ For Chinese content, `large-v3` is strongly recommended for best accuracy.
 
 ## Notes
 
+- **No translation, ever**: The script always transcribes in the speaker's original language. There is no translation option — do not add one. Do NOT pass `-l`/`--language` unless the user explicitly requests a specific language for auto-detection hints; letting whisperx auto-detect is the default and preferred behavior. Forcing `-l zh` on English audio produces garbled Chinese output
+- **Diarization on by default**: Always pass `--diarize` unless the user explicitly says they don't need speaker separation. HF_TOKEN must be set in the environment
 - **GPU required**: The script checks for CUDA GPU at startup and exits immediately if unavailable (no CPU fallback)
 - **Multi-GPU**: Automatically uses all available GPUs by default; splits audio and transcribes in parallel via `spawn` subprocesses
 - **Dedicated env**: Always use `/gluster_osa_cv/user/jinzili/env/whisperx` — whisperx needs transformers 4.x which conflicts with the base env's transformers 5.x

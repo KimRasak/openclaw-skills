@@ -206,6 +206,11 @@ def whisperx_diarize(
 
     token = hf_token or os.environ.get("HF_TOKEN")
     if not token:
+        # Fall back to huggingface-cli cached token (~/.cache/huggingface/token)
+        cached = os.path.expanduser("~/.cache/huggingface/token")
+        if os.path.isfile(cached):
+            token = open(cached).read().strip()
+    if not token:
         print(
             "Error: --diarize requires a HuggingFace token.\n"
             "  Set HF_TOKEN env var or pass --hf-token <token>\n"
