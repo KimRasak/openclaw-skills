@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Transcribe audio files to text using faster-whisper (GPU), with optional speaker diarization
-and multi-GPU parallel transcription."""
+and multi-GPU parallel transcription.
+
+Diarization mode uses WhisperX pipeline:
+  transcribe → word-align → pyannote diarize → assign speakers
+which gives word-level boundary accuracy instead of segment-level clustering.
+"""
 
 import argparse
 import multiprocessing
@@ -80,26 +85,40 @@ def _worker_transcribe(
     model_size: str,
     language: str | None,
     beam_size: int,
+    use_whisperx: bool = False,
 ) -> list[dict]:
     """Worker function: transcribe one chunk on a specific GPU. Runs in a subprocess."""
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-    model = WhisperModel(model_size, device="cuda", compute_type="float16")
-    segments, info = model.transcribe(
-        chunk_path,
-        language=language,
-        beam_size=beam_size,
-        vad_filter=True,
-        vad_parameters=dict(min_silence_duration_ms=500),
-    )
-    result = []
-    for seg in segments:
-        result.append({
-            "start": seg.start + offset,
-            "end": seg.end + offset,
-            "text": seg.text.strip(),
-        })
-    print(f"  GPU {gpu_id}: {len(result)} segments from {format_timestamp(offset)}")
-    return result
+    if use_whisperx:
+        import whisperx
+        model = whisperx.load_model(model_size, "cuda", compute_type="float16", language=language)
+        audio = whisperx.load_audio(chunk_path)
+        result = model.transcribe(audio, batch_size=16, language=language)
+        segments = []
+        for seg in result["segments"]:
+            segments.append({
+                "start": seg["start"] + offset,
+                "end": seg["end"] + offset,
+                "text": seg["text"].strip(),
+            })
+    else:
+        model = WhisperModel(model_size, device="cuda", compute_type="float16")
+        raw_segments, info = model.transcribe(
+            chunk_path,
+            language=language,
+            beam_size=beam_size,
+            vad_filter=True,
+            vad_parameters=dict(min_silence_duration_ms=500),
+        )
+        segments = []
+        for seg in raw_segments:
+            segments.append({
+                "start": seg.start + offset,
+                "end": seg.end + offset,
+                "text": seg.text.strip(),
+            })
+    print(f"  GPU {gpu_id}: {len(segments)} segments from {format_timestamp(offset)}")
+    return segments
 
 
 def _deduplicate_overlap(all_segments: list[list[dict]], boundaries: list[float]) -> list[dict]:
@@ -130,7 +149,8 @@ def parallel_transcribe(
     model_size: str = "large-v3",
     language: str | None = None,
     beam_size: int = 5,
-) -> tuple[list[dict], str | None]:
+    use_whisperx: bool = False,
+) -> list[dict]:
     """Split audio across GPUs with overlap, transcribe in parallel, merge and deduplicate."""
     ctx = multiprocessing.get_context("spawn")
     with tempfile.TemporaryDirectory(prefix="whisper_parallel_") as tmp_dir:
@@ -146,7 +166,7 @@ def parallel_transcribe(
             for i, (chunk_path, offset, _boundary) in enumerate(chunks):
                 fut = executor.submit(
                     _worker_transcribe,
-                    chunk_path, offset, i, model_size, language, beam_size,
+                    chunk_path, offset, i, model_size, language, beam_size, use_whisperx,
                 )
                 future_to_idx[fut] = i
 
@@ -159,69 +179,105 @@ def parallel_transcribe(
         elapsed = time.time() - t0
         print(f"Parallel transcription complete: {len(merged)} segments in {elapsed:.1f}s "
               f"({num_gpus} GPUs)")
-        return merged, None
+        return merged
 
 
-def _get_hf_token() -> str | None:
-    """Read HuggingFace token from env var or cached token file."""
-    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
-    if token:
-        return token
-    token_path = Path.home() / ".cache" / "huggingface" / "token"
-    if token_path.exists():
-        return token_path.read_text().strip() or None
-    return None
-
-
-def diarize_audio(
+def whisperx_diarize(
     audio_path: str,
+    model_size: str = "large-v3",
+    language: str | None = None,
+    beam_size: int = 5,
     num_speakers: int | None = None,
-) -> list[tuple[float, float, str]]:
-    """Run pyannote speaker diarization pipeline, return [(start, end, speaker), ...]."""
-    import torch
-    from pyannote.audio import Pipeline
+    hf_token: str | None = None,
+    num_gpus: int = 1,
+) -> list[dict]:
+    """Transcribe and diarize using WhisperX pipeline with multi-GPU parallel transcription.
 
-    hf_token = _get_hf_token()
-    if not hf_token:
-        print("Error: HuggingFace token required for pyannote speaker diarization.\n"
-              "Set HF_TOKEN env var or run: huggingface-cli login\n"
-              "Also accept the model license at: https://huggingface.co/pyannote/speaker-diarization-3.1",
-              file=sys.stderr)
+    Steps:
+      1. Split audio into num_gpus chunks, transcribe in parallel (one GPU each)
+      2. Merge + deduplicate overlap regions → full segment list
+      3. Align to word-level timestamps on GPU 0 (full audio)
+      4. Run pyannote speaker diarization on GPU 0 (full audio, global speaker embedding)
+      5. Assign each word to a speaker, group into segments
+    """
+    import whisperx
+
+    device = "cuda"
+
+    token = hf_token or os.environ.get("HF_TOKEN")
+    if not token:
+        print(
+            "Error: --diarize requires a HuggingFace token.\n"
+            "  Set HF_TOKEN env var or pass --hf-token <token>\n"
+            "  Also accept model licenses at:\n"
+            "    https://huggingface.co/pyannote/speaker-diarization-community-1\n"
+            "    https://huggingface.co/pyannote/segmentation-3.0",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    print("Loading speaker diarization pipeline ...")
-    pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", token=hf_token)
-    pipeline.to(torch.device("cuda"))
+    # Step 1: Multi-GPU parallel transcription
+    if num_gpus > 1:
+        print(f"[WhisperX] Transcribing with {num_gpus} GPUs in parallel ...")
+        segments_raw = parallel_transcribe(
+            audio_path, num_gpus, model_size, language, beam_size, use_whisperx=True,
+        )
+        # Reconstruct whisperx result format for alignment
+        result = {"segments": [{"start": s["start"], "end": s["end"], "text": s["text"]}
+                                for s in segments_raw],
+                  "language": language or "zh"}
+    else:
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+        print(f"[WhisperX] Loading model '{model_size}' ...")
+        model = whisperx.load_model(model_size, device, compute_type="float16", language=language)
+        audio_array = whisperx.load_audio(audio_path)
+        print(f"[WhisperX] Transcribing ...")
+        t0 = time.time()
+        result = model.transcribe(audio_array, batch_size=16, language=language)
+        print(f"[WhisperX] Transcription done in {time.time() - t0:.1f}s, "
+              f"{len(result['segments'])} segments")
+        del model
 
-    print("Running speaker diarization ...")
+    detected_lang = result.get("language", language or "zh")
+
+    # Load full audio for alignment and diarization (runs on GPU 0)
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    audio_array = whisperx.load_audio(audio_path)
+
+    # Step 2: Word-level alignment
+    print(f"[WhisperX] Loading alignment model for language '{detected_lang}' ...")
+    model_a, metadata = whisperx.load_align_model(language_code=detected_lang, device=device)
+    result = whisperx.align(
+        result["segments"], model_a, metadata, audio_array, device,
+        return_char_alignments=False,
+    )
+    print(f"[WhisperX] Alignment done")
+    del model_a
+
+    # Step 3: Speaker diarization on full audio
+    print(f"[WhisperX] Running speaker diarization ...")
+    t0 = time.time()
+    from whisperx.diarize import DiarizationPipeline, assign_word_speakers
+    diarize_model = DiarizationPipeline(token=token, device=device)
     kwargs = {}
-    if num_speakers is not None:
-        kwargs["num_speakers"] = num_speakers
-    diarization = pipeline(audio_path, **kwargs)
+    if num_speakers:
+        kwargs["min_speakers"] = num_speakers
+        kwargs["max_speakers"] = num_speakers
+    diarize_segments = diarize_model(audio_array, **kwargs)
+    print(f"[WhisperX] Diarization done in {time.time() - t0:.1f}s")
 
-    turns: list[tuple[float, float, str]] = []
-    for turn, _, speaker in diarization.itertracks(yield_label=True):
-        turns.append((turn.start, turn.end, speaker))
-    print(f"Diarization complete: {len(turns)} turns, "
-          f"{len({s for _, _, s in turns})} speakers detected")
-    return turns
+    # Step 4: Assign speakers to words, then to segments
+    result = assign_word_speakers(diarize_segments, result)
 
+    segments = []
+    for seg in result["segments"]:
+        segments.append({
+            "start": seg["start"],
+            "end": seg["end"],
+            "text": seg["text"].strip(),
+            "speaker": seg.get("speaker", "UNKNOWN"),
+        })
 
-def assign_speakers(
-    segments: list[dict],
-    diar_turns: list[tuple[float, float, str]],
-) -> list[dict]:
-    """Assign a speaker label to each transcript segment by max time overlap."""
-    for seg in segments:
-        seg_start, seg_end = seg["start"], seg["end"]
-        best_speaker = "UNKNOWN"
-        best_overlap = 0.0
-        for turn_start, turn_end, speaker in diar_turns:
-            overlap = max(0.0, min(seg_end, turn_end) - max(seg_start, turn_start))
-            if overlap > best_overlap:
-                best_overlap = overlap
-                best_speaker = speaker
-        seg["speaker"] = best_speaker
     return segments
 
 
@@ -250,6 +306,7 @@ def transcribe(
     diarize: bool = False,
     num_speakers: int | None = None,
     num_gpus: int | None = None,
+    hf_token: str | None = None,
 ):
     available_gpus = require_gpu()
 
@@ -261,41 +318,48 @@ def transcribe(
     if output_path is None:
         output_path = str(audio.with_suffix(".txt"))
 
-    use_gpus = min(num_gpus or available_gpus, available_gpus)
-
-    if use_gpus > 1:
-        print(f"Using {use_gpus}/{available_gpus} GPUs for parallel transcription")
-        segments, _ = parallel_transcribe(
-            str(audio), use_gpus, model_size, language, beam_size,
-        )
-    else:
-        device = "cuda"
-        compute_type = "float16"
-        print(f"Loading model '{model_size}' on {device} ({compute_type}) ...")
-        model = WhisperModel(model_size, device=device, compute_type=compute_type)
-
-        print(f"Transcribing: {audio_path}")
-        raw_segments, info = model.transcribe(
+    if diarize:
+        use_gpus = min(num_gpus or available_gpus, available_gpus)
+        print(f"Diarization mode: WhisperX pipeline (transcribe x{use_gpus} GPUs → align → diarize)")
+        segments = whisperx_diarize(
             str(audio),
+            model_size=model_size,
             language=language,
             beam_size=beam_size,
-            vad_filter=True,
-            vad_parameters=dict(min_silence_duration_ms=500),
+            num_speakers=num_speakers,
+            hf_token=hf_token,
+            num_gpus=use_gpus,
         )
-
-        if info.language:
-            print(f"Detected language: {info.language} (prob={info.language_probability:.2f})")
-
-        segments = [
-            {"start": seg.start, "end": seg.end, "text": seg.text.strip()}
-            for seg in raw_segments
-        ]
-        print(f"Transcription complete: {len(segments)} segments")
-
-    if diarize:
-        diar_turns = diarize_audio(str(audio), num_speakers=num_speakers)
-        segments = assign_speakers(segments, diar_turns)
         segments = merge_consecutive(segments)
+    else:
+        # Plain transcription: faster-whisper, multi-GPU parallel if available
+        use_gpus = min(num_gpus or available_gpus, available_gpus)
+        if use_gpus > 1:
+            print(f"Using {use_gpus}/{available_gpus} GPUs for parallel transcription")
+            segments = parallel_transcribe(str(audio), use_gpus, model_size, language, beam_size)
+        else:
+            device = "cuda"
+            compute_type = "float16"
+            print(f"Loading model '{model_size}' on {device} ({compute_type}) ...")
+            model = WhisperModel(model_size, device=device, compute_type=compute_type)
+
+            print(f"Transcribing: {audio_path}")
+            raw_segments, info = model.transcribe(
+                str(audio),
+                language=language,
+                beam_size=beam_size,
+                vad_filter=True,
+                vad_parameters=dict(min_silence_duration_ms=500),
+            )
+
+            if info.language:
+                print(f"Detected language: {info.language} (prob={info.language_probability:.2f})")
+
+            segments = [
+                {"start": seg.start, "end": seg.end, "text": seg.text.strip()}
+                for seg in raw_segments
+            ]
+            print(f"Transcription complete: {len(segments)} segments")
 
     lines: list[str] = []
     for seg in segments:
@@ -320,10 +384,15 @@ def main():
     parser.add_argument("-l", "--language", default=None, help="Language code (e.g. zh, en, ja)")
     parser.add_argument("--beam-size", type=int, default=5, help="Beam search width")
     parser.add_argument("--timestamps", action="store_true", help="Include timestamps")
-    parser.add_argument("--diarize", action="store_true", help="Enable speaker diarization (requires pyannote.audio)")
-    parser.add_argument("--num-speakers", type=int, default=None, help="Number of speakers (improves diarization accuracy)")
+    parser.add_argument("--diarize", action="store_true",
+                        help="Enable speaker diarization via WhisperX + pyannote (requires HF_TOKEN)")
+    parser.add_argument("--num-speakers", type=int, default=None,
+                        help="Number of speakers (improves diarization accuracy when known)")
+    parser.add_argument("--hf-token", default=None,
+                        help="HuggingFace token for pyannote models (or set HF_TOKEN env var)")
     parser.add_argument("--num-gpus", type=int, default=None,
-                        help="Number of GPUs for parallel transcription (default: all available)")
+                        help="Number of GPUs for parallel transcription (default: all available). "
+                             "In --diarize mode, transcription is parallelized; align+diarize always run on GPU 0.")
     args = parser.parse_args()
 
     transcribe(
@@ -336,6 +405,7 @@ def main():
         diarize=args.diarize,
         num_speakers=args.num_speakers,
         num_gpus=args.num_gpus,
+        hf_token=args.hf_token,
     )
 
 
