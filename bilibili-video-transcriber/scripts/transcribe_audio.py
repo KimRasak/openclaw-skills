@@ -150,8 +150,11 @@ def parallel_transcribe(
     language: str | None = None,
     beam_size: int = 5,
     use_whisperx: bool = False,
+    gpu_ids: list[int] | None = None,
 ) -> list[dict]:
     """Split audio across GPUs with overlap, transcribe in parallel, merge and deduplicate."""
+    if gpu_ids is None:
+        gpu_ids = list(range(num_gpus))
     ctx = multiprocessing.get_context("spawn")
     with tempfile.TemporaryDirectory(prefix="whisper_parallel_") as tmp_dir:
         chunks = split_audio(audio_path, num_gpus, tmp_dir)
@@ -166,7 +169,7 @@ def parallel_transcribe(
             for i, (chunk_path, offset, _boundary) in enumerate(chunks):
                 fut = executor.submit(
                     _worker_transcribe,
-                    chunk_path, offset, i, model_size, language, beam_size, use_whisperx,
+                    chunk_path, offset, gpu_ids[i], model_size, language, beam_size, use_whisperx,
                 )
                 future_to_idx[fut] = i
 
@@ -190,6 +193,7 @@ def whisperx_diarize(
     num_speakers: int | None = None,
     hf_token: str | None = None,
     num_gpus: int = 1,
+    gpu_ids: list[int] | None = None,
 ) -> list[dict]:
     """Transcribe and diarize using WhisperX pipeline with multi-GPU parallel transcription.
 
@@ -203,6 +207,9 @@ def whisperx_diarize(
     import whisperx
 
     device = "cuda"
+    if gpu_ids is None:
+        gpu_ids = list(range(num_gpus))
+    primary_gpu = gpu_ids[0]
 
     token = hf_token or os.environ.get("HF_TOKEN")
     if not token:
@@ -226,13 +233,14 @@ def whisperx_diarize(
         print(f"[WhisperX] Transcribing with {num_gpus} GPUs in parallel ...")
         segments_raw = parallel_transcribe(
             audio_path, num_gpus, model_size, language, beam_size, use_whisperx=True,
+            gpu_ids=gpu_ids,
         )
         # Reconstruct whisperx result format for alignment
         result = {"segments": [{"start": s["start"], "end": s["end"], "text": s["text"]}
                                 for s in segments_raw],
                   "language": language or "zh"}
     else:
-        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(primary_gpu)
         print(f"[WhisperX] Loading model '{model_size}' ...")
         model = whisperx.load_model(model_size, device, compute_type="float16", language=language)
         audio_array = whisperx.load_audio(audio_path)
@@ -245,8 +253,8 @@ def whisperx_diarize(
 
     detected_lang = result.get("language", language or "zh")
 
-    # Load full audio for alignment and diarization (runs on GPU 0)
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    # Load full audio for alignment and diarization (runs on primary GPU)
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(primary_gpu)
     audio_array = whisperx.load_audio(audio_path)
 
     # Step 2: Word-level alignment
@@ -315,6 +323,13 @@ def transcribe(
 ):
     available_gpus = require_gpu()
 
+    # Respect CUDA_VISIBLE_DEVICES if set — use only those physical GPU IDs
+    cuda_vis = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+    if cuda_vis and cuda_vis != "NoDevFiles":
+        visible_gpu_ids = [int(x.strip()) for x in cuda_vis.split(",") if x.strip().isdigit()]
+    else:
+        visible_gpu_ids = list(range(available_gpus))
+
     audio = Path(audio_path)
     if not audio.exists():
         print(f"Error: audio file not found: {audio}", file=sys.stderr)
@@ -324,7 +339,8 @@ def transcribe(
         output_path = str(audio.with_suffix(".txt"))
 
     if diarize:
-        use_gpus = min(num_gpus or available_gpus, available_gpus)
+        use_gpus = min(num_gpus or len(visible_gpu_ids), len(visible_gpu_ids))
+        gpu_ids_to_use = visible_gpu_ids[:use_gpus]
         print(f"Diarization mode: WhisperX pipeline (transcribe x{use_gpus} GPUs → align → diarize)")
         segments = whisperx_diarize(
             str(audio),
@@ -334,15 +350,18 @@ def transcribe(
             num_speakers=num_speakers,
             hf_token=hf_token,
             num_gpus=use_gpus,
+            gpu_ids=gpu_ids_to_use,
         )
         segments = merge_consecutive(segments)
     else:
         # Plain transcription: faster-whisper, multi-GPU parallel if available
-        use_gpus = min(num_gpus or available_gpus, available_gpus)
+        use_gpus = min(num_gpus or len(visible_gpu_ids), len(visible_gpu_ids))
         if use_gpus > 1:
-            print(f"Using {use_gpus}/{available_gpus} GPUs for parallel transcription")
-            segments = parallel_transcribe(str(audio), use_gpus, model_size, language, beam_size)
+            print(f"Using {use_gpus}/{len(visible_gpu_ids)} GPUs for parallel transcription")
+            segments = parallel_transcribe(str(audio), use_gpus, model_size, language, beam_size,
+                                           gpu_ids=visible_gpu_ids[:use_gpus])
         else:
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(visible_gpu_ids[0])
             device = "cuda"
             compute_type = "float16"
             print(f"Loading model '{model_size}' on {device} ({compute_type}) ...")
