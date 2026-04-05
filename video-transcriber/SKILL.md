@@ -1,19 +1,21 @@
 ---
-name: bilibili-video-transcriber
-description: Download audio from Bilibili videos and transcribe to text using faster-whisper (GPU). Supports multi-GPU parallel transcription and speaker diarization via pyannote.audio. Use when the user wants to download B站 video audio, transcribe Bilibili videos to text, or convert online video speech to text files.
+name: video-transcriber
+description: Transcribe audio/video files to text using faster-whisper (GPU). Supports multi-GPU parallel transcription and speaker diarization via WhisperX + pyannote.audio. Use when the user wants to transcribe audio files to text, convert speech to text, or do speaker diarization on audio/video files.
 ---
 
-# Bilibili Video Transcriber
+# Video Transcriber
 
-从 Bilibili (B站) 视频下载音频，并使用 faster-whisper 在 GPU 上转录为文本。支持多 GPU 并行加速和说话人分离。
+使用 faster-whisper 在 GPU 上将音频/视频文件转录为文本。支持多 GPU 并行加速和说话人分离（WhisperX + pyannote）。
 
 ## When to Use This Skill
 
 Use this skill when you need to:
-- Download audio from a Bilibili video and transcribe it to text
-- Extract speech content from B站 videos (lectures, podcasts, live streams)
-- Convert Bilibili video audio to a readable text file
+- Transcribe an audio or video file to text
+- Convert speech content to a readable text file
 - Distinguish different speakers in a conversation (speaker diarization)
+- Batch transcribe multiple audio files
+
+This skill works with any audio/video file (mp3, wav, flac, m4a, mp4, etc.), not just Bilibili downloads. For downloading audio from Bilibili first, use the `bilibili-video-downloader` skill.
 
 ## Environment
 
@@ -33,20 +35,12 @@ whisperx 3.8.2, faster-whisper 1.2.1, pyannote-audio 4.0.4, pydub, ffmpeg (conda
 
 ## Prerequisites
 
-### 1. yt-dlp (audio download)
-
-```bash
-pip install yt-dlp   # in base env, if not already installed
-```
-
-ffmpeg is pre-installed in the whisperx env via conda-forge.
-
-### 2. faster-whisper (audio transcription, GPU)
+### 1. faster-whisper (audio transcription, GPU)
 
 Pre-installed in `/gluster_osa_cv/user/jinzili/env/whisperx`. Requires CUDA-capable GPU.
 The script enforces GPU availability at startup — if no CUDA GPU is detected, it exits immediately.
 
-### 3. whisperx + pyannote (speaker diarization, optional)
+### 2. whisperx + pyannote (speaker diarization, optional)
 
 Pre-installed in `/gluster_osa_cv/user/jinzili/env/whisperx`. Required only when using `--diarize`.
 You must also:
@@ -57,24 +51,7 @@ You must also:
 > **Important:** The model used is `pyannote/speaker-diarization-community-1`, **not**
 > `speaker-diarization-3.1`. Make sure to accept the license for the correct model page.
 
-## Workflow
-
-### Step 1 — Download Audio
-
-```bash
-yt-dlp -x --audio-format mp3 --audio-quality 0 \
-  -o "<OUTPUT_DIR>/%(title)s.%(ext)s" \
-  "<BILIBILI_URL>"
-```
-
-| Flag | Description |
-|------|-------------|
-| `-x` | Extract audio only |
-| `--audio-format mp3` | Convert to MP3 (also supports: aac, flac, m4a, opus, wav) |
-| `--audio-quality 0` | Best quality (0=best, 10=worst) |
-| `-o` | Output template. `%(title)s` = video title, `%(ext)s` = extension |
-
-### Step 2 — Transcribe to Text
+## Usage
 
 ```bash
 /gluster_osa_cv/user/jinzili/env/whisperx/bin/python3 scripts/transcribe_audio.py <AUDIO_FILE> [OPTIONS]
@@ -96,20 +73,15 @@ yt-dlp -x --audio-format mp3 --audio-quality 0 \
 > exits with an error. When multiple GPUs are available, the audio is automatically split and
 > transcribed in parallel across all GPUs.
 
-### Full Example
+### Examples
 
 ```bash
-# 1. Download audio
-yt-dlp -x --audio-format mp3 --audio-quality 0 \
-  -o "output/%(title)s.%(ext)s" \
-  "https://www.bilibili.com/video/BV1dKPrzPEwc/"
-
-# 2. Transcribe with timestamps (auto-detect language, single GPU)
+# Transcribe with timestamps (auto-detect language, single GPU)
 CUDA_VISIBLE_DEVICES=0 \
 /gluster_osa_cv/user/jinzili/env/whisperx/bin/python3 scripts/transcribe_audio.py \
   "output/视频标题.mp3" -o "output/视频标题.txt" --timestamps --diarize
 
-# 3. Transcribe with speaker diarization (7 GPUs parallel transcription)
+# Transcribe with speaker diarization (7 GPUs parallel)
 HF_TOKEN=<your_token> \
 /gluster_osa_cv/user/jinzili/env/whisperx/bin/python3 scripts/transcribe_audio.py \
   "output/视频标题.mp3" -o "output/视频标题.txt" \
@@ -144,9 +116,6 @@ When `--diarize` is enabled, the script uses the **WhisperX pipeline**:
 4. **pyannote diarization** (GPU 0, full audio): runs `speaker-diarization-community-1` to detect speaker turns
 5. **Assign + merge**: assigns each word to a speaker, merges consecutive segments from same speaker
 
-Word-level alignment before speaker assignment is far more accurate than segment-level embedding
-clustering (the old approach produced 100+ spurious clusters on long audio).
-
 Output format with diarization:
 ```
 [00:03:50 -> 00:04:00] SPEAKER_00: 你要不要来回应一下 就是好多人就会好奇
@@ -173,8 +142,7 @@ For Chinese content, `large-v3` is strongly recommended for best accuracy.
 
 ## Output
 
-- Audio file: `<output_dir>/<video_title>.mp3`
-- Text file: `<output_dir>/<video_title>.txt` (plain text, one segment per line)
+- Text file: `<audio>.txt` (plain text, one segment per line)
 - With `--timestamps`: each line prefixed with `[HH:MM:SS -> HH:MM:SS]`
 - With `--diarize`: each line prefixed with `[HH:MM:SS -> HH:MM:SS] SPEAKER_XX:`
 
@@ -187,9 +155,5 @@ For Chinese content, `large-v3` is strongly recommended for best accuracy.
 - **Dedicated env**: Always use `/gluster_osa_cv/user/jinzili/env/whisperx` — whisperx needs transformers 4.x which conflicts with the base env's transformers 5.x
 - **pyannote model**: Use `speaker-diarization-community-1` (not `speaker-diarization-3.1`) — whisperx 3.8 defaults to community-1
 - **torchcodec warning**: A `UserWarning` about torchcodec appears on every run — this is harmless, whisperx uses soundfile for audio loading
-- Bilibili URL query parameters (e.g., `?spm_id_from=...`) are safely ignored
-- For multi-part videos (分P), use `--playlist-items` to select specific parts
-- Chinese characters in filenames are preserved correctly
-- No Bilibili login required for public videos; for members-only content use `--cookies`
 - VAD (Voice Activity Detection) is enabled by default to skip silence and improve speed
 - First run downloads the Whisper model (~3 GB for large-v3); subsequent runs use cached model
