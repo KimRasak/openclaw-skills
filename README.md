@@ -12,6 +12,7 @@ AI 研究助理技能集合 —— 用于论文发现、文献追踪和研究话
 | [hf-papers](hf-papers/) | 获取 Hugging Face 每日/每周/每月论文 | [huggingface.co/papers](https://huggingface.co/papers) | 否 |
 | [citation-explorer](citation-explorer/) | 从种子论文出发，沿引用链发散探索研究话题，生成话题关系图谱 | [OpenAlex API](https://openalex.org/) (2.5亿+ 文献) | 否 |
 | [bilibili-video-transcriber](bilibili-video-transcriber/) | 下载B站视频音频并用 Whisper 转录为文本，支持多GPU并行和说话人分离 | [Bilibili](https://www.bilibili.com/) + [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (GPU) + [pyannote.audio](https://github.com/pyannote/pyannote-audio) | 说话人分离需HF Token |
+| [douyin-video-downloader](douyin-video-downloader/) | 从抖音分享链接（含混淆文字）解析并下载无水印视频 | [Douyin](https://www.douyin.com/) | 否 |
 
 ## 快速使用
 
@@ -57,6 +58,18 @@ python3 bilibili-video-transcriber/scripts/transcribe_audio.py "output/视频标
   -o "output/视频标题.txt" -l zh --diarize --num-gpus 4
 ```
 
+### douyin-video-downloader — 抖音视频下载
+
+```bash
+# 从分享文字下载
+python3 douyin-video-downloader/scripts/douyin_download.py \
+  "7.08 复制打开抖音，看看【xxx】的作品 https://v.douyin.com/aBcDeFg/"
+
+# 从短链接下载
+python3 douyin-video-downloader/scripts/douyin_download.py \
+  "https://v.douyin.com/aBcDeFg/" -o my_videos/
+```
+
 ## 目录结构
 
 ```
@@ -77,6 +90,10 @@ openclaw-skills/
 │   ├── SKILL.md
 │   └── scripts/
 │       └── transcribe_audio.py     # faster-whisper GPU 音频转文字
+├── douyin-video-downloader/
+│   ├── SKILL.md
+│   └── scripts/
+│       └── douyin_download.py      # 抖音视频解析下载
 └── README.md
 ```
 
