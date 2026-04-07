@@ -7,13 +7,13 @@ Optionally supports speaker diarization via WhisperX + pyannote.
 
 Usage:
     # GPU mode (default)
-    CUDA_VISIBLE_DEVICES=0 python3 server.py --port 8542 --model large-v3
+    CUDA_VISIBLE_DEVICES=0 python3 server_v2.py --port 8542 --model large-v3
 
     # CPU mode
-    python3 server.py --port 8542 --model large-v3 --cpu
+    python3 server_v2.py --port 8542 --model large-v3 --cpu
 
     # With speaker diarization
-    CUDA_VISIBLE_DEVICES=0 python3 server.py --port 8542 --diarize --hf-token <token>
+    CUDA_VISIBLE_DEVICES=4 python3 server_v2.py --port 8542 --diarize --bot-api http://43.167.248.101:9100 --hf-token <token>
 
 The whisper model stays loaded in memory between requests for fast turnaround.
 When --diarize is enabled, the WhisperX pipeline (transcribe → align → diarize)
@@ -39,10 +39,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import traceback
 from pathlib import Path
 
+import requests as http_requests
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
@@ -1101,6 +1103,117 @@ def _check_prerequisites():
 
 
 # ---------------------------------------------------------------------------
+# Queue worker — pulls from bot HTTP API, transcribes, pushes result back
+# ---------------------------------------------------------------------------
+_queue_lock = threading.Lock()
+QUEUE_POLL_INTERVAL = 3  # seconds
+_bot_api_url: str = ""   # set in main(), e.g. "http://1.2.3.4:9100"
+
+
+def _remote_pull_request() -> dict | None:
+    """Pull one pending request from bot's Queue A via HTTP."""
+    try:
+        resp = http_requests.get(f"{_bot_api_url}/queue/pull", timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("task")
+    except Exception as e:
+        print(f"[QueueWorker] Failed to pull from bot API: {e}", file=sys.stderr)
+        return None
+
+
+def _remote_push_result(result: dict):
+    """Push a finished result to bot's Queue B via HTTP."""
+    try:
+        resp = http_requests.post(
+            f"{_bot_api_url}/queue/result",
+            json=result,
+            timeout=30,
+        )
+        resp.raise_for_status()
+    except Exception as e:
+        print(f"[QueueWorker] Failed to push result to bot API: {e}", file=sys.stderr)
+
+
+def _queue_worker():
+    """Background thread: continuously poll bot API for requests."""
+    print(f"[QueueWorker] Started, polling {_bot_api_url}/queue/pull ...")
+    while True:
+        try:
+            request = _remote_pull_request()
+            if request is None:
+                time.sleep(QUEUE_POLL_INTERVAL)
+                continue
+            _process_queue_request(request)
+        except Exception as e:
+            print(f"[QueueWorker] Unexpected error: {e}", file=sys.stderr)
+            traceback.print_exc()
+            time.sleep(QUEUE_POLL_INTERVAL)
+
+
+def _process_queue_request(request: dict):
+    task_id = request["task_id"]
+    share_text = request.get("share_text", "")
+    print(f"[QueueWorker] Processing task {task_id}: {share_text[:80]}...")
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="vtqueue_"))
+    try:
+        source = detect_source(share_text)
+        if source == "unknown":
+            raise RuntimeError("无法识别链接类型，请粘贴抖音或B站的分享链接。")
+
+        source_label = "抖音" if source == "douyin" else "B站"
+        print(f"[QueueWorker] task {task_id}: source={source_label}")
+
+        t0 = time.time()
+        if source == "douyin":
+            media_path = download_douyin(share_text, tmp_dir)
+        else:
+            media_path = download_bilibili(share_text, tmp_dir)
+        print(f"[QueueWorker] task {task_id}: downloaded in {time.time()-t0:.1f}s")
+
+        t0 = time.time()
+        with _queue_lock:
+            if _server_diarize:
+                segments = transcriber.transcribe_diarize(
+                    str(media_path), num_speakers=_server_num_speakers,
+                )
+            else:
+                segments = transcriber.transcribe(str(media_path))
+        print(f"[QueueWorker] task {task_id}: transcribed {len(segments)} segments in {time.time()-t0:.1f}s")
+
+        result_text = segments_to_text(segments, timestamps=True, diarize=_server_diarize)
+
+        _remote_push_result({
+            "task_id": task_id,
+            "text": result_text,
+            "user_openid": request.get("user_openid", ""),
+            "msg_id": request.get("msg_id", ""),
+            "source": request.get("source", "c2c"),
+            "group_openid": request.get("group_openid", ""),
+            "success": True,
+            "error": "",
+        })
+        print(f"[QueueWorker] task {task_id}: done, result pushed to bot")
+
+    except Exception as e:
+        print(f"[QueueWorker] task {task_id} failed: {e}", file=sys.stderr)
+        traceback.print_exc()
+        _remote_push_result({
+            "task_id": task_id,
+            "text": "",
+            "user_openid": request.get("user_openid", ""),
+            "msg_id": request.get("msg_id", ""),
+            "source": request.get("source", "c2c"),
+            "group_openid": request.get("group_openid", ""),
+            "success": False,
+            "error": str(e),
+        })
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
 def main():
@@ -1117,6 +1230,9 @@ def main():
                         help="HuggingFace token for pyannote models (or set HF_TOKEN env var)")
     parser.add_argument("--num-speakers", type=int, default=None,
                         help="Number of speakers hint for diarization (default: auto-detect)")
+    parser.add_argument("--bot-api", default=None,
+                        help="Bot queue API base URL, e.g. http://43.167.248.101:9100"
+                             "(enables queue worker polling)")
     args = parser.parse_args()
 
     hf_token = args.hf_token or os.environ.get("HF_TOKEN")
@@ -1148,14 +1264,23 @@ def main():
         hf_token=hf_token,
     )
 
+    global _bot_api_url
+    _bot_api_url = (args.bot_api or "").rstrip("/")
+
     device_label = "CPU (int8)" if args.cpu else "GPU (float16)"
     diarize_label = "on" if args.diarize else "off"
+    queue_label = f"polling {_bot_api_url} every {QUEUE_POLL_INTERVAL}s" if _bot_api_url else "disabled"
     print(f"\n{'='*40}")
     print(f"  Video Transcribe Server")
     print(f"  Model   : {args.model} (resident on {device_label})")
     print(f"  Diarize : {diarize_label}")
+    print(f"  Queue   : {queue_label}")
     print(f"  URL     : http://{args.host}:{args.port}")
     print(f"{'='*40}\n")
+
+    if _bot_api_url:
+        worker = threading.Thread(target=_queue_worker, daemon=True)
+        worker.start()
 
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
