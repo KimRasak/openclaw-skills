@@ -2,21 +2,27 @@
 name: academic-api-guide
 description: >-
   Query academic literature via arXiv, Semantic Scholar, and OpenAlex APIs
-  without API keys. Use when searching papers, fetching metadata, exploring
-  citations, or building literature review tools. Covers endpoint URLs,
-  parameter syntax, rate limits, and recommended usage patterns.
+  without API keys, plus Google Scholar via the local browser crawler
+  (scholar-crawler). Use when searching papers, fetching metadata, exploring
+  citations, filtering by publication year, or building literature review
+  tools. Covers endpoint URLs, parameter syntax, year filters, rate limits,
+  and recommended usage patterns.
 ---
 
-# Academic API Guide — arXiv / Semantic Scholar / OpenAlex
+# Academic API Guide — arXiv / Semantic Scholar / OpenAlex / Google Scholar
 
-三个免费学术 API 的无 key 用法速查。按场景选择：
+三个免费学术 API 加一个本机 Scholar 爬虫的无 key（或已有 key）用法速查。按场景选择：
 
 | 场景 | 首选 | 备选 |
 |---|---|---|
 | 关键词搜索 + 筛选 | OpenAlex | S2 bulk search |
-| 引用链 / 被引分析 | OpenAlex | S2 paper detail |
+| **只看近几年**（避开年代久远的老论文） | Google Scholar：`scholar-crawler --recent 3` | OpenAlex `filter=publication_year:...` |
+| 引用链 / 被引分析 | OpenAlex | S2 paper detail；Scholar 引证列表 `--cites` |
 | 最新预印本 / 下载 PDF | arXiv | — |
 | 单篇详情（tldr、摘要） | S2 paper detail | OpenAlex |
+
+> 年份过滤速记：OpenAlex 用 `filter=publication_year:2023-2025`；S2 用 `year=2023-2025`；
+> arXiv 没有原生年份参数（见 §2 的替代做法）；Scholar 用 `--recent 3` 或 `--year-from/--year-to`。
 
 ---
 
@@ -118,6 +124,26 @@ sortBy=submittedDate&sortOrder=descending
 sortBy=relevance&sortOrder=descending
 ```
 
+### 年份过滤（无原生参数，两种替代）
+
+arXiv API 没有年份参数，只能：
+
+```python
+# 1) 推荐：按提交日期排序 + 客户端过滤（最可靠）
+import arxiv
+client = arxiv.Client()
+search = arxiv.Search(query="2D facial expression generation",
+                      max_results=50, sort_by=arxiv.SortCriterion.SubmittedDate)
+recent = [r for r in client.results(search) if r.published.year >= 2024]
+```
+
+```bash
+# 2) submittedDate 范围语法（可用但少有人知，写进 search_query）
+curl -s "https://export.arxiv.org/api/query?search_query=cat:cs.CV+AND+submittedDate:[202401010000+TO+202512312359]&max_results=5"
+```
+
+注意：范围过滤会让"命中的第 1–N 条"整体后移，`max_results` 要放大再过滤，不能只取 5 条。
+
 ### Python 示例（推荐用 arxiv 库）
 
 ```bash
@@ -179,6 +205,10 @@ curl -s -H "x-api-key: $SEMANTIC_SCHOLAR_API_KEY" "https://api.semanticscholar.o
 # 有 key（推荐，速率充裕）
 curl -s -H "x-api-key: $SEMANTIC_SCHOLAR_API_KEY" \
   "https://api.semanticscholar.org/graph/v1/paper/search?query=facial+expression+generation&limit=10&fields=title,year,citationCount,tldr"
+
+# 限定年份：year=单年 | 起-止 | 开区间（配合 query 一起传）
+curl -s -H "x-api-key: $SEMANTIC_SCHOLAR_API_KEY" \
+  "https://api.semanticscholar.org/graph/v1/paper/search?query=facial+expression+generation&year=2023-2026&limit=10&fields=title,year,citationCount"
 
 # 无 key 备选：用 bulk search
 curl -s "https://api.semanticscholar.org/graph/v1/paper/search/bulk?query=facial+expression+generation&limit=10&fields=title,year,citationCount,tldr"
@@ -244,6 +274,43 @@ for p in resp.json().get("data", []):
 - 有 key 时可直接用 `/paper/search`；无 key 时用 `/paper/search/bulk` 替代
 - `tldr` 字段是 S2 独有特色，对快速筛选论文非常有用
 - 有 key 速率：1 req/sec；请求间仍建议加 100ms 延迟留余量
+
+---
+
+## 4. Google Scholar（本机 scholar-crawler，浏览器爬取）
+
+Scholar 没有官方 API。本机装了 `scholar-crawler`（源码 `/Users/jinzili/code/google-scholar-crawler`）：
+真实浏览器访问 scholar.google.com，验证码交给屏幕前的人处理，结果落 JSONL / JSON。
+
+### 年份过滤（只看近几年，避开十年前的经典）
+
+```bash
+# 只看最近 3 个日历年（含今年）——搜出来的老论文大多是被引数堆上去的经典
+scholar-crawler -q "retrieval augmented generation" --recent 3 -p 2 --json
+
+# 精确区间
+scholar-crawler -q "..." --year-from 2023 --year-to 2025 --json
+
+# 引证文献列表同样能限年份（--cites / --cluster 都吃这套过滤）
+scholar-crawler --cites 2960712678066186980 --recent 3 --json
+```
+
+- `--recent N` 等价于 `--year-from（今年−N+1）`，落在请求上是 `as_ylo`；与 `--year-from` **二选一**，同时给会报错
+- 例外：`--author` 主页没有年份过滤（Scholar 限制），抓完用
+  `scholar-digest out/author.jsonl --recent 3 -o out/author-recent.jsonl` 补一刀
+- 断点/续抓与手写 `--year-from` 完全一致（`--resume` 继续，URL 不变）
+
+### 调用方式（agent）
+
+```bash
+scholar-crawler -q "..." --recent 3 -p 2 --json        # stdout 只有一个 JSON 对象，进度在 stderr
+scholar-crawler -q "..." --recent 3 --dry-run --json   # 先估价（page_loads / seconds），不发请求
+```
+
+- 断点续抓：每页即写即存，`--resume` 从 `out/state.json` 继续
+- **验证码只能交给人**：headless 下遇到验证会以 `challenge_unattended` 结束，
+  正确做法是让人在窗口里过一次，不要加打码/代理轮换/重试——要批量元数据请改用上面三个 API
+- 完整调用约定：`/Users/jinzili/code/google-scholar-crawler/AGENTS.md`
 
 ---
 

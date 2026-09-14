@@ -8,6 +8,7 @@ AI 研究助理技能集合 —— 用于论文发现、文献追踪和研究话
 
 | Skill | 用途 | 数据源 | 需要 API Key |
 |-------|------|--------|:---:|
+| [academic-api-guide](academic-api-guide/) | 学术检索速查：关键词搜索、引用链、**年份过滤**（只看近几年） | [OpenAlex](https://openalex.org/) + [Semantic Scholar](https://www.semanticscholar.org/) + [arXiv](https://arxiv.org/) + 本机 scholar-crawler（Google Scholar） | 否（S2 有 key 更快） |
 | [alphaxiv](alphaxiv/) | 获取热门/高赞 AI/ML 论文，支持分页 | [alphaxiv.org](https://www.alphaxiv.org/) | 否 |
 | [hf-papers](hf-papers/) | 获取 Hugging Face 每日/每周/每月论文 | [huggingface.co/papers](https://huggingface.co/papers) | 否 |
 | [citation-explorer](citation-explorer/) | 从种子论文出发，沿引用链发散探索研究话题，生成话题关系图谱 | [OpenAlex API](https://openalex.org/) (2.5亿+ 文献) | 否 |
@@ -15,6 +16,23 @@ AI 研究助理技能集合 —— 用于论文发现、文献追踪和研究话
 | [douyin-video-downloader](douyin-video-downloader/) | 从抖音分享链接（含混淆文字）解析并下载无水印视频 | [Douyin](https://www.douyin.com/) | 否 |
 
 ## 快速使用
+
+### academic-api-guide — 学术检索 + 年份过滤
+
+```bash
+# Google Scholar 只看近 3 年（本机 scholar-crawler，验证码需人工过一次）
+scholar-crawler -q "retrieval augmented generation" --recent 3 -p 2 --json
+
+# OpenAlex 限定年份区间
+curl -s "https://api.openalex.org/works?search=retrieval+augmented+generation&filter=publication_year:2023-2026&per_page=5"
+
+# Semantic Scholar 限定年份
+curl -s "https://api.semanticscholar.org/graph/v1/paper/search?query=RAG&year=2023-2026&limit=5&fields=title,year"
+
+# arXiv 没有年份参数：按提交日期排序后客户端过滤（见 SKILL.md §2）
+```
+
+用法速查全文：[academic-api-guide/SKILL.md](academic-api-guide/SKILL.md)
 
 ### alphaxiv — 热门论文
 
