@@ -14,6 +14,7 @@ AI 研究助理技能集合 —— 用于论文发现、文献追踪和研究话
 | [citation-explorer](citation-explorer/) | 从种子论文出发，沿引用链发散探索研究话题，生成话题关系图谱 | [OpenAlex API](https://openalex.org/) (2.5亿+ 文献) | 否 |
 | [bilibili-video-transcriber](bilibili-video-transcriber/) | 下载B站视频音频并用 Whisper 转录为文本，支持多GPU并行和说话人分离 | [Bilibili](https://www.bilibili.com/) + [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (GPU) + [pyannote.audio](https://github.com/pyannote/pyannote-audio) | 说话人分离需HF Token |
 | [douyin-video-downloader](douyin-video-downloader/) | 从抖音分享链接（含混淆文字）解析并下载无水印视频 | [Douyin](https://www.douyin.com/) | 否 |
+| [agent-session-inspector](agent-session-inspector/) | 本地 AI 编程助手（DeepSeek Harness / Codex / Antigravity）会话存储位置速查、检索与导出 | 本机 `~/.dsh` + `~/.codex` + `~/.gemini/antigravity` | 否 |
 
 ## 快速使用
 
@@ -88,6 +89,19 @@ python3 douyin-video-downloader/scripts/douyin_download.py \
   "https://v.douyin.com/aBcDeFg/" -o my_videos/
 ```
 
+### agent-session-inspector — 本地 Agent 会话检索与解析
+
+```bash
+# 列出 DSH / Codex / Antigravity 最近的本地会话
+python3 agent-session-inspector/scripts/inspect_sessions.py list --tool all --limit 20
+
+# 查看指定会话的用户提问与模型回复
+python3 agent-session-inspector/scripts/inspect_sessions.py show <session-id-prefix>
+
+# 跨工具全文搜索用户说过的关键词
+python3 agent-session-inspector/scripts/inspect_sessions.py search "关键词" --user-only
+```
+
 ## 目录结构
 
 ```
@@ -112,6 +126,9 @@ openclaw-skills/
 │   ├── SKILL.md
 │   └── scripts/
 │       └── douyin_download.py      # 抖音视频解析下载
+├── agent-session-inspector/
+│   ├── SKILL.md
+│   └── scripts/inspect_sessions.py # DSH / Codex / Antigravity 会话解析与搜索
 └── README.md
 ```
 
