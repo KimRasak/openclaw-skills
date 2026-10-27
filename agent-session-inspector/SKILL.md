@@ -1,16 +1,16 @@
 ---
 name: agent-session-inspector
 description: >-
-  Locate, inspect, search, and parse local conversation history across three AI
-  coding agents: DeepSeek Harness (DSH), Cursor/VSCode Codex extension, and
-  VSCode/Cursor Google Antigravity extension. Use when reviewing past prompts,
-  auditing model usage, extracting conversation transcripts, or debugging
-  session storage formats.
+  Locate, inspect, search, and parse local conversation history across four AI
+  coding agents: DeepSeek Harness (DSH), Cursor/VSCode Codex extension,
+  VSCode/Cursor Google Antigravity extension, and Kiro (IDE/CLI). Use when
+  reviewing past prompts, auditing model usage, extracting conversation
+  transcripts, or debugging session storage formats.
 ---
 
 # Agent Session Inspector — 本地会话存储位置与查看指南
 
-汇总 **DeepSeek Harness (DSH)**、**Cursor / VSCode Codex 插件**、**VSCode / Cursor Antigravity 插件** 三个 AI 编程助手在本地磁盘上的会话存储路径、数据格式及查看方法。
+汇总 **DeepSeek Harness (DSH)**、**Cursor / VSCode Codex 插件**、**VSCode / Cursor Antigravity 插件**、**Kiro (IDE / CLI)** 四个 AI 编程助手在本地磁盘上的会话存储路径、数据格式及查看方法。
 
 ## 存储位置速查表
 
@@ -19,21 +19,22 @@ description: >-
 | **DeepSeek Harness (DSH)** | `~/.dsh/` | `~/.dsh/sessions/--<workspace-slug>--/<session-id>/session.v3.jsonl.zstd`（或旧版 `session.jsonl.zstd`） | `~/.dsh/storages/session_projcache/sessions/<session-id>.json` | `zstd` 压缩的 UTF-8 JSONL |
 | **Cursor / VSCode Codex 插件** | `~/.codex/` | `~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<session-id>.jsonl`（归档位于 `~/.codex/archived_sessions/`） | `~/.codex/session_index.jsonl`、`~/.codex/history.jsonl`、`~/.codex/state_5.sqlite` | 纯文本 UTF-8 JSONL |
 | **VSCode / Cursor Antigravity 插件** | `~/.gemini/antigravity/`（CLI 为 `~/.gemini/antigravity-cli/`） | `~/.gemini/antigravity/brain/<conversation-id>/.system_generated/logs/transcript.jsonl` 及 `conversations/<conversation-id>.db` | `~/.gemini/antigravity/conversation_summaries.db`（含 FTS 全文检索表） | 纯文本 UTF-8 JSONL + SQLite (`.db`) |
+| **Kiro (IDE / CLI)** | `~/.kiro/` | `~/.kiro/sessions/<workspace-hash>/sess_<uuid>/messages.jsonl`（子智能体位于 `sub-executions/<sub-id>.jsonl`） | `~/.kiro/sessions/<workspace-hash>/.index/index.json`、`~/.kiro/session-index/<workspace-hash>.jsonl`、`sess_<uuid>/session.json` | 纯文本 UTF-8 JSONL + JSON |
 
 ---
 
 ## 快速使用（内置通用脚本）
 
-本目录提供零外部依赖的通用解析脚本 `scripts/inspect_sessions.py`，支持统一列出、搜索和导出三个工具的会话：
+本目录提供零外部依赖的通用解析脚本 `scripts/inspect_sessions.py`，支持统一列出、搜索和导出四个工具的会话：
 
 ```bash
-# 1. 列出三个工具最近的会话（默认排除 subagent 子会话）
+# 1. 列出四个工具最近的会话（默认排除 subagent 子会话）
 python3 agent-session-inspector/scripts/inspect_sessions.py list --tool all --limit 20
 
-# 2. 只看某一个工具的会话（可选: dsh | codex | antigravity | all）
-python3 agent-session-inspector/scripts/inspect_sessions.py list --tool dsh --limit 10
+# 2. 只看某一个工具的会话（可选: dsh | codex | antigravity | kiro | all）
+python3 agent-session-inspector/scripts/inspect_sessions.py list --tool kiro --limit 10
 
-# 3. 查看指定会话 ID（支持前缀匹配）的完整多轮对话与所用模型
+# 3. 查看指定会话 ID（支持前缀或子串匹配）的完整多轮对话与所用模型
 python3 agent-session-inspector/scripts/inspect_sessions.py show <session-id-prefix>
 
 # 4. 只看用户在会话中说的话（过滤掉模型回复）
@@ -206,4 +207,65 @@ sqlite3 -header -column ~/.gemini/antigravity/conversation_summaries.db \
 # 从全文索引表中直接查看用户发言与模型回复
 sqlite3 ~/.gemini/antigravity/conversation_summaries.db \
   "SELECT conversation_id, chunk_index, user_body, substr(agent_body, 1, 500) FROM conversations_fts WHERE chunk_index >= 0;"
+```
+
+---
+
+## 4. Kiro (IDE / CLI)
+
+Kiro IDE 与 Kiro CLI 统一将会话与索引保存在 `~/.kiro/` 目录下，按工作区路径的 16 位十六进制哈希（无工作区时为 `_global`）分组存储。
+
+### 目录结构
+
+```text
+~/.kiro/
+├── session-index/
+│   └── <workspace-hash-or-_global>.jsonl          # 会话增删变更日志（op, sessionPath, at）
+├── workspace-roots/
+│   └── <workspace-hash>/                          # 工作区级权限与元数据（如 permissions.yaml）
+└── sessions/
+    └── <workspace-hash>/
+        ├── .index/
+        │   └── index.json                         # 该工作区下所有会话的摘要列表（title, workspacePaths 等）
+        └── sess_<uuid>/
+            ├── session.json                       # 单会话元信息（id, title, modelId, workspacePaths, createdAt 等）
+            ├── messages.jsonl                     # 主会话完整事件流（纯文本 UTF-8 JSONL）
+            ├── sub-executions/
+            │   └── <sub-session-uuid>.jsonl       # 子智能体（Subagent）独立执行事件流
+            ├── tool-outputs/
+            │   └── <tool>-<hash>.txt              # 超长工具输出的完整落盘文件
+            └── snapshots/
+                └── <checkpoint-hash>              # 每轮文件修改前的快照备份
+```
+
+### 核心事件格式（`messages.jsonl` 每行一个 JSON）
+
+每行形如 `{"id": "...", "timestamp": "2026-10-27T02:48:49.595Z", "payload": {...}}`，主要 `payload.type` 包括：
+
+- **用户输入（`payload.type == "user"`）**：
+  - `payload.content`：用户发送的消息正文字符串。
+- **模型思考与回复（`payload.type == "assistant"`）**：
+  - `payload.operationType == "Reasoning"`：模型内部推理思考过程（`payload.content`、`payload.reasoningModelId`），提取纯对话时应跳过。
+  - `payload.operationType == "Say"`（或非 `"Reasoning"`）：模型对用户展示的正式回复正文（`payload.content`）。
+- **模型标识与用量统计**：
+  - 会话级初始模型位于 `session.json` 的 `modelId`（如 `"claude-opus-5.5"`）。
+  - 单步推理模型位于 `assistant`（`Reasoning`）事件的 `payload.reasoningModelId`（如 `"qdev::claude-opus-5.5"`）。
+  - `payload.type == "usage_summary"`：包含 `payload.usage`（`credits`、`contextUsagePercentage`）以及 `payload.modelDisplay`（`modelId`、`displayName`、`contextWindowTokens`）。
+- **子智能体调用（Subagent）**：
+  - 主会话 `messages.jsonl` 中通过 `payload.type == "sub_agent_start"`（含 `subSessionId`、`subAgentName`、`prompt`）和 `payload.type == "sub_agent_complete"`（含 `subSessionId`、`response`、`status`）记录子任务起止。
+  - 子智能体的完整工具调用轨迹保存在同目录 `sub-executions/<subSessionId>.jsonl`，并通过 `toolName == "subagent_response"` 的 `tool_call` 提交最终回复。
+
+### 命令行直接查看
+
+```bash
+# 查看某个工作区下的所有 Kiro 会话摘要索引
+jq '.entries[] | {id, title, createdAt, workspacePaths}' \
+  ~/.kiro/sessions/<workspace-hash>/.index/index.json
+
+# 提取某条 Kiro 会话中的用户提问与模型正式回复（过滤掉 Reasoning 思考过程）
+jq -c '
+  if .payload.type == "user" then {time: .timestamp, role: "user", text: .payload.content}
+  elif (.payload.type == "assistant" and .payload.operationType != "Reasoning") then {time: .timestamp, role: "assistant", text: .payload.content}
+  else empty end
+' ~/.kiro/sessions/<workspace-hash>/sess_<uuid>/messages.jsonl
 ```

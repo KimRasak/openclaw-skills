@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unified CLI to list, show, and search local sessions across DSH, Codex, and Antigravity."""
+"""Unified CLI to list, show, and search local sessions across DSH, Codex, Antigravity, and Kiro."""
 
 import argparse
 import datetime
@@ -348,6 +348,158 @@ def parse_antigravity_dialogue(session_info: Dict[str, Any]) -> List[Dict[str, A
 
 
 # ---------------------------------------------------------------------------
+# 4. Kiro (IDE / CLI)
+# ---------------------------------------------------------------------------
+def iter_kiro_sessions(include_subagents: bool = False) -> List[Dict[str, Any]]:
+    base = os.path.expanduser("~/.kiro/sessions")
+    if not os.path.isdir(base):
+        return []
+    results: List[Dict[str, Any]] = []
+    for mpath in sorted(glob.glob(os.path.join(base, "*", "sess_*", "messages.jsonl"))):
+        sdir = os.path.dirname(mpath)
+        meta_path = os.path.join(sdir, "session.json")
+        meta: Dict[str, Any] = {}
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, "r", encoding="utf-8") as fp:
+                    meta = json.load(fp)
+            except Exception:
+                pass
+        sid = meta.get("id") or os.path.basename(sdir)
+        ws_paths = meta.get("workspacePaths") or meta.get("rootPaths") or []
+        cwd = ws_paths[0] if ws_paths else "-"
+        model_id = (
+            meta.get("modelId")
+            or (meta.get("contextSnapshotModelDisplay") or {}).get("modelId")
+            or "unknown"
+        )
+        mtime_ms = int(os.path.getmtime(mpath) * 1000)
+        created_at = _fmt_ts(meta.get("createdAt") or mtime_ms)
+        results.append(
+            {
+                "tool": "kiro",
+                "id": sid,
+                "cwd": cwd,
+                "title": meta.get("title") or "",
+                "model": model_id,
+                "created_at": created_at,
+                "sort_key": mtime_ms,
+                "path": mpath,
+                "is_subagent": False,
+            }
+        )
+        if include_subagents:
+            for spath in sorted(glob.glob(os.path.join(sdir, "sub-executions", "*.jsonl"))):
+                sub_id = os.path.splitext(os.path.basename(spath))[0]
+                sub_mtime_ms = int(os.path.getmtime(spath) * 1000)
+                results.append(
+                    {
+                        "tool": "kiro",
+                        "id": sub_id,
+                        "cwd": cwd,
+                        "title": f"[subagent of {sid}]",
+                        "model": model_id,
+                        "created_at": _fmt_ts(sub_mtime_ms),
+                        "sort_key": sub_mtime_ms,
+                        "path": spath,
+                        "parent_path": mpath,
+                        "is_subagent": True,
+                    }
+                )
+    return results
+
+
+def parse_kiro_dialogue(session_info: Dict[str, Any]) -> List[Dict[str, Any]]:
+    fpath = session_info["path"]
+    cur_model = session_info.get("model") or "unknown"
+    turns: List[Dict[str, Any]] = []
+
+    if session_info.get("is_subagent") and session_info.get("parent_path"):
+        parent_path = session_info["parent_path"]
+        sub_id = session_info["id"]
+        if os.path.exists(parent_path):
+            try:
+                with open(parent_path, "r", encoding="utf-8") as pfp:
+                    for line in pfp.read().split("\n"):
+                        if not line.strip():
+                            continue
+                        obj = json.loads(line)
+                        p = obj.get("payload", {})
+                        if p.get("type") == "sub_agent_start" and p.get("subSessionId") == sub_id:
+                            prompt = (p.get("prompt") or "").strip()
+                            if prompt:
+                                turns.append(
+                                    {
+                                        "role": "user",
+                                        "model": cur_model,
+                                        "time": _fmt_ts(obj.get("timestamp")),
+                                        "text": prompt,
+                                    }
+                                )
+                            break
+            except Exception:
+                pass
+
+    if not os.path.exists(fpath):
+        return turns
+
+    with open(fpath, "r", encoding="utf-8") as fp:
+        for line in fp.read().split("\n"):
+            if not line.strip():
+                continue
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
+            p = obj.get("payload", {})
+            pt = p.get("type")
+            ts = _fmt_ts(obj.get("timestamp"))
+
+            rm = p.get("reasoningModelId")
+            if rm:
+                cur_model = rm.split("::", 1)[-1]
+            elif pt == "usage_summary":
+                m_disp = (p.get("modelDisplay") or {}).get("modelId")
+                if m_disp:
+                    cur_model = m_disp
+
+            if pt == "user":
+                content = (p.get("content") or "").strip()
+                if content:
+                    turns.append(
+                        {
+                            "role": "user",
+                            "model": cur_model,
+                            "time": ts,
+                            "text": content,
+                        }
+                    )
+            elif pt == "assistant" and p.get("operationType") != "Reasoning":
+                content = (p.get("content") or "").strip()
+                if content:
+                    turns.append(
+                        {
+                            "role": "assistant",
+                            "model": cur_model,
+                            "time": ts,
+                            "text": content,
+                        }
+                    )
+            elif pt == "tool_call" and p.get("toolName") == "subagent_response":
+                resp = ((p.get("args") or {}).get("response") or "").strip()
+                if resp:
+                    turns.append(
+                        {
+                            "role": "assistant",
+                            "model": cur_model,
+                            "time": ts,
+                            "text": resp,
+                        }
+                    )
+    return turns
+
+
+# ---------------------------------------------------------------------------
 # Unified Commands
 # ---------------------------------------------------------------------------
 def collect_all(tool: str, include_subagents: bool = False) -> List[Dict[str, Any]]:
@@ -358,6 +510,8 @@ def collect_all(tool: str, include_subagents: bool = False) -> List[Dict[str, An
         items.extend(iter_codex_sessions())
     if tool in ("antigravity", "all"):
         items.extend(iter_antigravity_sessions())
+    if tool in ("kiro", "all"):
+        items.extend(iter_kiro_sessions(include_subagents=include_subagents))
     items.sort(key=lambda x: x.get("sort_key", 0), reverse=True)
     return items
 
@@ -370,6 +524,8 @@ def parse_dialogue(item: Dict[str, Any]) -> List[Dict[str, Any]]:
         return parse_codex_dialogue(item)
     if t == "antigravity":
         return parse_antigravity_dialogue(item)
+    if t == "kiro":
+        return parse_kiro_dialogue(item)
     return []
 
 
@@ -421,11 +577,15 @@ def cmd_search(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Inspect local sessions across DSH, Codex, and Antigravity.")
+    parser = argparse.ArgumentParser(
+        description="Inspect local sessions across DSH, Codex, Antigravity, and Kiro."
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_list = sub.add_parser("list", help="List recent sessions")
-    p_list.add_argument("--tool", choices=["dsh", "codex", "antigravity", "all"], default="all")
+    p_list.add_argument(
+        "--tool", choices=["dsh", "codex", "antigravity", "kiro", "all"], default="all"
+    )
     p_list.add_argument("--limit", type=int, default=20)
     p_list.add_argument("--include-subagents", action="store_true")
     p_list.set_defaults(func=cmd_list)
@@ -437,7 +597,9 @@ def main() -> None:
 
     p_search = sub.add_parser("search", help="Search keyword across sessions")
     p_search.add_argument("keyword", help="Keyword to search")
-    p_search.add_argument("--tool", choices=["dsh", "codex", "antigravity", "all"], default="all")
+    p_search.add_argument(
+        "--tool", choices=["dsh", "codex", "antigravity", "kiro", "all"], default="all"
+    )
     p_search.add_argument("--user-only", action="store_true", help="Search only user messages")
     p_search.add_argument("--include-subagents", action="store_true")
     p_search.add_argument("--limit", type=int, default=50)
